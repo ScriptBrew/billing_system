@@ -2,17 +2,17 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ main ] # Runs every time you push to the main branch
+    branches: [ main ] # Runs when you push code to the main branch
 
 jobs:
   build:
-    runs-on: windows-latest # Uses a Windows cloud machine
+    runs-on: windows-latest # This provides the cloud Windows machine
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
@@ -20,11 +20,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Enable Windows Build
+        run: flutter config --enable-windows-desktop
+
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Upload Build
-        uses: actions/actions-artifact-upload@v3
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: windows-billing-app
-          path: build\windows\x64\runner\Release # Path to your .exe
+          name: supermarket-pos-windows
+          path: build/windows/x64/runner/Release/ # Path to your .exe
