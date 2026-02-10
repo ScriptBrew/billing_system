@@ -14,6 +14,7 @@ void main() async {
   runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: AuthScreen()));
 }
 
+// --- AUTH SCREEN ---
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
   @override
@@ -30,7 +31,7 @@ class _AuthScreenState extends State<AuthScreen> {
       final res = await Supabase.instance.client.from('staff_login').select().eq('username', userCtrl.text).eq('password', passCtrl.text).maybeSingle();
       if (res != null) {
         await loginScanner.stop();
-        await loginScanner.dispose(); // Hard release for Windows
+        await loginScanner.dispose();
         if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => BillingHome(staffId: res['id'])));
       } else {
         throw "Invalid Credentials";
@@ -74,6 +75,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 }
 
+// --- BILLING HOME ---
 class BillingHome extends StatefulWidget {
   final String staffId;
   const BillingHome({super.key, required this.staffId});
@@ -92,15 +94,15 @@ class _BillingHomeState extends State<BillingHome> {
   @override
   void initState() {
     super.initState();
-    mainController = MobileScannerController(detectionTimeoutMs: 1500); // Prevent camera freezing
+    mainController = MobileScannerController(detectionTimeoutMs: 1500);
   }
 
   Future<void> _safeRestart() async {
     if (mainController != null) {
       await mainController!.stop();
-      await mainController!.dispose(); // Full hardware cleanup
+      await mainController!.dispose();
     }
-    await Future.delayed(const Duration(milliseconds: 2000)); // Cool-down for Windows drivers
+    await Future.delayed(const Duration(milliseconds: 2000));
     if (mounted) {
       setState(() { 
         mainController = MobileScannerController(detectionTimeoutMs: 1500);
@@ -118,6 +120,49 @@ class _BillingHomeState extends State<BillingHome> {
       });
       searchCtrl.clear();
     }
+  }
+
+  // --- PDF GENERATION LOGIC ---
+  Future<void> _processBill(bool saveToLocal) async {
+    // 1. Pause Camera to prevent hardware conflicts while PDF is generating
+    if (mainController != null) await mainController!.stop();
+
+    final pdf = pw.Document();
+    pdf.addPage(pw.Page(
+      pageFormat: PdfPageFormat.a4,
+      build: (pw.Context context) => pw.Padding(
+        padding: const pw.EdgeInsets.all(30),
+        child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+          pw.Center(child: pw.Text("SUPERMARKET INVOICE", style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold))),
+          pw.SizedBox(height: 15),
+          pw.Text("Customer: ${nameCtrl.text}"),
+          pw.Text("Mobile: ${phoneCtrl.text}"),
+          pw.Text("Date: ${DateTime.now().toString().substring(0,16)}"),
+          pw.SizedBox(height: 20),
+          pw.TableHelper.fromTextArray(
+            headers: ['Item', 'Qty', 'Price', 'Total'],
+            data: cart.map((i) => [i['name'], i['qty'], "Rs. ${i['price']}", "Rs. ${i['price'] * i['qty']}"]).toList(),
+          ),
+          pw.Divider(),
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
+            pw.Text("GRAND TOTAL: Rs. ${cart.fold(0.0, (sum, i) => sum + (i['price'] * i['qty']))}", style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
+          ]),
+          pw.SizedBox(height: 50),
+          pw.Center(child: pw.Text("THANK YOU FOR SHOPPING WITH US!", style: pw.TextStyle(fontStyle: pw.FontStyle.italic))),
+        ]),
+      ),
+    ));
+
+    if (saveToLocal) {
+      // "Save Bill" - Automatically triggers the Save As / Download dialog
+      await Printing.sharePdf(bytes: await pdf.save(), filename: 'invoice_${nameCtrl.text}.pdf');
+    } else {
+      // "Generate Bill" - Opens the standard Print Preview
+      await Printing.layoutPdf(onLayout: (format) async => pdf.save());
+    }
+
+    // 2. Restart Camera after PDF process is closed
+    _safeRestart();
   }
 
   @override
@@ -149,20 +194,39 @@ class _BillingHomeState extends State<BillingHome> {
             TextButton.icon(onPressed: () => setState(() { cart.clear(); nameCtrl.clear(); phoneCtrl.clear(); }), icon: const Icon(Icons.refresh), label: const Text("Clear")),
           ])),
         const VerticalDivider(),
-        Expanded(child: ListView.builder(
-          itemCount: cart.length,
-          itemBuilder: (ctx, i) => ListTile(
-            title: Text(cart[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text("Rs. ${cart[i]['price']} x ${cart[i]['qty']}"),
-            trailing: Text("Rs. ${cart[i]['price'] * cart[i]['qty']}"),
-          ),
-        )),
+        Expanded(child: Column(children: [
+          Expanded(child: ListView.builder(
+            itemCount: cart.length,
+            itemBuilder: (ctx, i) => ListTile(
+              title: Text(cart[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text("Rs. ${cart[i]['price']} x ${cart[i]['qty']}"),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                 IconButton(icon: const Icon(Icons.remove_circle, color: Colors.red), onPressed: () => setState(() => cart[i]['qty'] > 1 ? cart[i]['qty']-- : cart.removeAt(i))),
+                 Text("${cart[i]['qty']}"),
+                 IconButton(icon: const Icon(Icons.add_circle, color: Colors.green), onPressed: () => setState(() => cart[i]['qty']++)),
+                 const SizedBox(width: 10),
+                 Text("Rs. ${cart[i]['price'] * cart[i]['qty']}"),
+              ]),
+            ),
+          )),
+          Container(padding: const EdgeInsets.all(20), color: Colors.grey[200], child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Total: Rs. ${cart.fold(0.0, (sum, i) => sum + (i['price'] * i['qty']))}", style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              Row(children: [
+                ElevatedButton(onPressed: () => _processBill(true), child: const Text("SAVE BILL")),
+                const SizedBox(width: 10),
+                ElevatedButton(onPressed: () => _processBill(false), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2D3E50)), child: const Text("GENERATE BILL", style: TextStyle(color: Colors.white))),
+              ])
+            ],
+          ))
+        ])),
       ]),
     );
   }
 
   void _showAddDialog() async {
-    if (mainController != null) { await mainController!.stop(); await mainController!.dispose(); } // Release for dialog
+    if (mainController != null) { await mainController!.stop(); await mainController!.dispose(); }
     final b = TextEditingController(); final n = TextEditingController(); final p = TextEditingController();
     final dialogScanner = MobileScannerController(detectionTimeoutMs: 1500);
     if (!mounted) return;
