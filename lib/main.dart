@@ -14,6 +14,7 @@ void main() async {
   runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: AuthScreen()));
 }
 
+// --- AUTH SCREEN ---
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
   @override
@@ -30,35 +31,14 @@ class _AuthScreenState extends State<AuthScreen> {
       final res = await Supabase.instance.client.from('staff_login').select().eq('username', userCtrl.text).eq('password', passCtrl.text).maybeSingle();
       if (res != null) {
         await loginScanner.stop();
-        loginScanner.dispose(); // Release for Home
-        _checkLocation(res['id']);
+        loginScanner.dispose();
+        if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => BillingHome(staffId: res['id'])));
       } else {
         throw "Invalid Credentials";
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
-  }
-
-  void _checkLocation(String userId) async {
-    final res = await Supabase.instance.client.from('profiles').select().eq('id', userId).maybeSingle();
-    if (res == null || res['location'] == null) {
-      _showLocSetup(userId);
-    } else {
-      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => BillingHome(staffId: userId, location: res['location'])));
-    }
-  }
-
-  void _showLocSetup(String userId) {
-    final c = TextEditingController();
-    showDialog(context: context, barrierDismissible: false, builder: (ctx) => AlertDialog(
-      title: const Text("Set Billing Location"),
-      content: TextField(controller: c, decoration: const InputDecoration(labelText: "Store Counter")),
-      actions: [ElevatedButton(onPressed: () async {
-        await Supabase.instance.client.from('profiles').upsert({'id': userId, 'location': c.text});
-        if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => BillingHome(staffId: userId, location: c.text)));
-      }, child: const Text("Save"))],
-    ));
   }
 
   @override
@@ -70,11 +50,11 @@ class _AuthScreenState extends State<AuthScreen> {
           width: 400, padding: const EdgeInsets.all(32),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Text("SUPERMARKET LOGIN", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 15),
-            Container(height: 120, width: double.infinity, color: Colors.black, child: MobileScanner(
-              controller: loginScanner, 
-              onDetect: (cap) {
+            const Icon(Icons.shopping_basket, size: 50, color: Colors.blueGrey),
+            const Text("SUPERMARKET POS", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 20),
+            Container(height: 150, width: double.infinity, decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(8)),
+              child: MobileScanner(controller: loginScanner, onDetect: (cap) {
                 final code = cap.barcodes.first.rawValue ?? "";
                 if (code.contains(":")) {
                   userCtrl.text = code.split(":")[0];
@@ -83,10 +63,11 @@ class _AuthScreenState extends State<AuthScreen> {
                 }
               })),
             const SizedBox(height: 15),
-            TextField(controller: userCtrl, decoration: const InputDecoration(labelText: "Username")),
-            TextField(controller: passCtrl, decoration: const InputDecoration(labelText: "Password"), obscureText: true),
+            TextField(controller: userCtrl, decoration: const InputDecoration(labelText: "Username", border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: passCtrl, decoration: const InputDecoration(labelText: "Password", border: OutlineInputBorder()), obscureText: true),
             const SizedBox(height: 20),
-            ElevatedButton(onPressed: _handleAuth, child: const Text("LOGIN")),
+            SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: _handleAuth, style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey[800]), child: const Text("LOGIN", style: TextStyle(color: Colors.white)))),
           ]),
         ),
       ),
@@ -94,10 +75,10 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 }
 
+// --- BILLING HOME ---
 class BillingHome extends StatefulWidget {
   final String staffId;
-  final String location;
-  const BillingHome({super.key, required this.staffId, required this.location});
+  const BillingHome({super.key, required this.staffId});
   @override
   State<BillingHome> createState() => _BillingHomeState();
 }
@@ -113,7 +94,7 @@ class _BillingHomeState extends State<BillingHome> {
   @override
   void initState() {
     super.initState();
-    mainController = MobileScannerController(detectionTimeoutMs: 1500); // Prevent scan freeze
+    mainController = MobileScannerController(detectionTimeoutMs: 1500);
   }
 
   Future<void> _safeRestart() async {
@@ -121,7 +102,7 @@ class _BillingHomeState extends State<BillingHome> {
       await mainController!.stop();
       mainController!.dispose();
     }
-    await Future.delayed(const Duration(milliseconds: 2000)); // Crucial for Chrome
+    await Future.delayed(const Duration(milliseconds: 2000));
     if (mounted) {
       setState(() { 
         mainController = MobileScannerController(detectionTimeoutMs: 1500);
@@ -132,85 +113,98 @@ class _BillingHomeState extends State<BillingHome> {
 
   void _onDetect(String code) async {
     final res = await Supabase.instance.client.from('items').select().eq('barcode', code).maybeSingle();
-    if (res != null) {
-      setState(() {
-        int i = cart.indexWhere((it) => it['barcode'] == code);
-        if (i != -1) cart[i]['qty']++; else cart.add({...res, 'qty': 1});
-      });
-      searchCtrl.clear();
+    if (res != null) { _addToCart(res); searchCtrl.clear(); }
+  }
+
+  void _searchByName(String name) async {
+    final res = await Supabase.instance.client.from('items').select().ilike('name', '%$name%');
+    if (res != null && res.isNotEmpty) {
+      showDialog(context: context, builder: (ctx) => AlertDialog(
+        title: const Text("Select Product"),
+        content: SizedBox(width: 300, child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: res.length,
+          itemBuilder: (c, i) => ListTile(
+            title: Text(res[i]['name']),
+            trailing: Text("Rs. ${res[i]['price']}"),
+            onTap: () { _addToCart(res[i]); Navigator.pop(ctx); searchCtrl.clear(); },
+          ),
+        )),
+      ));
     }
   }
 
-  Future<void> _generateBill(bool saveOnly) async {
-    final pdf = pw.Document();
-    pdf.addPage(pw.Page(
-      pageFormat: PdfPageFormat.a4,
-      build: (pw.Context context) => pw.Padding(
-        padding: const pw.EdgeInsets.all(30),
-        child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-          pw.Center(child: pw.Text("SUPERMARKET INVOICE", style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold))),
-          pw.SizedBox(height: 20),
-          pw.Text("Loc: ${widget.location} | Cust: ${nameCtrl.text} | Ph: ${phoneCtrl.text}"),
-          pw.SizedBox(height: 20),
-          pw.TableHelper.fromTextArray(
-            headers: ['Item', 'Qty', 'Price', 'Subtotal'],
-            data: cart.map((i) => [i['name'], i['qty'], "Rs. ${i['price']}", "Rs. ${i['price'] * i['qty']}"]).toList(),
-          ),
-          pw.Divider(),
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
-            pw.Text("TOTAL: Rs. ${cart.fold(0.0, (sum, i) => sum + (i['price'] * i['qty']))}", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18)),
-          ]),
-          pw.SizedBox(height: 40),
-          pw.Center(child: pw.Text("THANK YOU FOR SHOPPING WITH US!")),
-        ]),
-      ),
-    ));
-    if (saveOnly) await Printing.sharePdf(bytes: await pdf.save(), filename: 'Bill.pdf');
-    else await Printing.layoutPdf(onLayout: (format) async => pdf.save());
+  void _addToCart(Map<String, dynamic> item) {
+    setState(() {
+      int i = cart.indexWhere((it) => it['barcode'] == item['barcode']);
+      if (i != -1) cart[i]['qty']++; else cart.add({...item, 'qty': 1});
+    });
   }
+
+  double get totalAmount => cart.fold(0.0, (sum, i) => sum + (i['price'] * i['qty']));
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("POS System"), actions: [
-        ElevatedButton.icon(onPressed: _showAddDialog, icon: const Icon(Icons.add), label: const Text("ADD ITEM")),
-        IconButton(onPressed: () async {
-          if (mainController != null) { await mainController!.stop(); mainController!.dispose(); }
-          if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AuthScreen()));
-        }, icon: const Icon(Icons.logout)),
-        const SizedBox(width: 15),
-      ]),
+      appBar: AppBar(
+        backgroundColor: Colors.blueGrey[800],
+        title: const Text("POS System", style: TextStyle(color: Colors.white)),
+        actions: [
+          IconButton(onPressed: _showAddDialog, icon: const Icon(Icons.add_circle, color: Colors.white)),
+          IconButton(onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const AuthScreen())), icon: const Icon(Icons.logout, color: Colors.white)),
+        ],
+      ),
       body: Row(children: [
-        SizedBox(width: 380, child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
-          Container(height: 250, decoration: BoxDecoration(border: Border.all(color: Colors.blue)),
-            child: mainController == null ? const Center(child: CircularProgressIndicator()) : MobileScanner(
-              key: scannerKey, 
-              controller: mainController, 
-              onDetect: (cap) { if (cap.barcodes.isNotEmpty) _onDetect(cap.barcodes.first.rawValue!); })),
-          const SizedBox(height: 20),
-          TextField(controller: searchCtrl, decoration: const InputDecoration(labelText: "Barcode Search", border: OutlineInputBorder()), onSubmitted: _onDetect),
-          TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: "Customer Name")),
-          TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: "Mobile Number")),
-          TextButton.icon(onPressed: () => setState(() { cart.clear(); nameCtrl.clear(); phoneCtrl.clear(); }), icon: const Icon(Icons.refresh), label: const Text("Clear")),
-        ]))),
-        const VerticalDivider(),
-        Expanded(child: Column(children: [
-          Expanded(child: ListView.builder(itemCount: cart.length, itemBuilder: (ctx, i) => ListTile(
-            title: Text(cart[i]['name']), subtitle: Text("Rs. ${cart[i]['price']} x ${cart[i]['qty']}"),
-            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-              IconButton(icon: const Icon(Icons.remove_circle), onPressed: () => setState(() => cart[i]['qty'] > 1 ? cart[i]['qty']-- : cart.removeAt(i))),
-              Text("${cart[i]['qty']}"),
-              IconButton(icon: const Icon(Icons.add_circle), onPressed: () => setState(() => cart[i]['qty']++)),
-            ]),
-          ))),
-          Container(padding: const EdgeInsets.all(25), child: Column(children: [
-            Text("TOTAL: Rs. ${cart.fold(0.0, (sum, i) => sum + (i['price'] * i['qty'])).toStringAsFixed(2)}", style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
-              ElevatedButton(onPressed: () => _generateBill(true), child: const Text("SAVE BILL")),
-              ElevatedButton(onPressed: () => _generateBill(false), child: const Text("GENERATE BILL")),
-            ])
-          ]))
-        ]))
+        Container(width: 350, color: Colors.grey[100], padding: const EdgeInsets.all(16),
+          child: Column(children: [
+            Container(height: 200, decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(12)),
+              child: mainController == null ? const Center(child: CircularProgressIndicator()) : MobileScanner(key: scannerKey, controller: mainController, onDetect: (cap) { if (cap.barcodes.isNotEmpty) _onDetect(cap.barcodes.first.rawValue!); })),
+            const SizedBox(height: 20),
+            TextField(controller: searchCtrl, decoration: const InputDecoration(labelText: "Scan Barcode or Type Name", border: OutlineInputBorder()), onSubmitted: (val) {
+              if (double.tryParse(val) == null) _searchByName(val); else _onDetect(val);
+            }),
+            const SizedBox(height: 10),
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: "Customer Name", border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: "Mobile Number", border: OutlineInputBorder())),
+            const Spacer(),
+            ElevatedButton.icon(onPressed: () => setState(() { cart.clear(); nameCtrl.clear(); phoneCtrl.clear(); }), icon: const Icon(Icons.refresh), label: const Text("RESET BILL"), style: ElevatedButton.styleFrom(backgroundColor: Colors.red[50], foregroundColor: Colors.red)),
+          ])),
+        
+        Expanded(child: Container(color: Colors.white, padding: const EdgeInsets.all(20),
+          child: Column(children: [
+            Expanded(child: ListView.separated(
+              itemCount: cart.length,
+              separatorBuilder: (context, index) => const Divider(),
+              itemBuilder: (ctx, i) => ListTile(
+                title: Text(cart[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                subtitle: Text("Rs. ${cart[i]['price']} x ${cart[i]['qty']}"),
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                  IconButton(icon: const Icon(Icons.remove_circle, color: Colors.orange), onPressed: () => setState(() => cart[i]['qty'] > 1 ? cart[i]['qty']-- : cart.removeAt(i))),
+                  Text("${cart[i]['qty']}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  IconButton(icon: const Icon(Icons.add_circle, color: Colors.green), onPressed: () => setState(() => cart[i]['qty']++)),
+                  const SizedBox(width: 10),
+                  // DELETE BUTTON
+                  IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => setState(() => cart.removeAt(i))),
+                  const SizedBox(width: 10),
+                  Text("Rs. ${cart[i]['price'] * cart[i]['qty']}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ]),
+              ),
+            )),
+            Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(12)),
+              child: Column(children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  const Text("TOTAL:", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                  Text("Rs. ${totalAmount.toStringAsFixed(2)}", style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.green)),
+                ]),
+                const SizedBox(height: 15),
+                Row(children: [
+                  Expanded(child: ElevatedButton(onPressed: () {}, child: const Text("SAVE BILL"))),
+                  const SizedBox(width: 10),
+                  Expanded(child: ElevatedButton(onPressed: () {}, style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey[800]), child: const Text("GENERATE BILL", style: TextStyle(color: Colors.white)))),
+                ])
+              ]))
+          ])))
       ]),
     );
   }
@@ -219,10 +213,9 @@ class _BillingHomeState extends State<BillingHome> {
     if (mainController != null) { await mainController!.stop(); } 
     final b = TextEditingController(); final n = TextEditingController(); final p = TextEditingController();
     final dialogScanner = MobileScannerController(detectionTimeoutMs: 1500);
-    
     if (!mounted) return;
     showDialog(context: context, barrierDismissible: false, builder: (ctx) => AlertDialog(
-      title: const Text("New Product"),
+      title: const Text("Register Product"),
       content: SizedBox(width: 400, child: Column(mainAxisSize: MainAxisSize.min, children: [
         SizedBox(height: 150, child: MobileScanner(controller: dialogScanner, onDetect: (c) { if (c.barcodes.isNotEmpty) b.text = c.barcodes.first.rawValue ?? ""; })),
         TextField(controller: b, decoration: const InputDecoration(labelText: "Barcode")),
